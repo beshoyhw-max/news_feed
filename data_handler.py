@@ -44,14 +44,29 @@ def parse_duration(duration_str: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes)
 
 
+import os
+
 def load_flights(
     filepath: str = "merged_flight_data.xlsx"
 ) -> List[Flight]:
-    """Loads flight data from an Excel file and returns a list of Flight objects."""
-    
+    """
+    Loads flight data from a fast-loading Feather cache if it exists.
+    If not, it reads the original Excel file, creates the cache, and then loads the data.
+    """
+    feather_path = filepath.replace(".xlsx", ".feather")
     flights = []
+
     try:
-        df = pd.read_excel(filepath)
+        if os.path.exists(feather_path):
+            print(f"Loading flights from fast cache: {feather_path}")
+            df = pd.read_feather(feather_path)
+        else:
+            print(f"Cache not found. Loading from original file: {filepath}")
+            df = pd.read_excel(filepath)
+            # Save the dataframe to a feather file for future fast loading
+            df.to_feather(feather_path)
+            print(f"Cache created at: {feather_path}")
+
         # Convert 'Date' column to datetime, coercing errors to NaT
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         # Drop rows where 'Date' could not be parsed
@@ -103,11 +118,9 @@ def load_flights(
                     transfers = 0
                 
                 flight_number = ''.join(re.findall(r'[A-Z0-9]', str(row['Plane'])))
-                
-                # Handle flight class 'E'
-                flight_class = row.get('flight_class', 'Economy')
-                if flight_class == 'E':
-                    flight_class = 'Economy'
+
+                # Handle flight class, making it case-insensitive and matching 'Business'/'Economy'
+                flight_class = str(row.get('flight_class', 'Economy')).strip().capitalize()
 
                 # Create Flight object
                 flight = Flight(
@@ -123,6 +136,7 @@ def load_flights(
                     arrival_datetime=arrival_datetime,
                     duration=duration,
                     transfers=transfers,
+                    transfer_info=transfer_info,
                     direct_flight=(transfers == 0)
                 )
                 flights.append(flight)
@@ -130,7 +144,7 @@ def load_flights(
                 print(f"Warning: Could not parse row: {row}. Error: {e}. Skipping.")
                 continue
     except FileNotFoundError:
-        print(f"Error: Flight data file not found at {filepath}.")
+        print(f"Error: Data file not found at {filepath}.")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 

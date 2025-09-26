@@ -13,10 +13,11 @@ def find_best_travel_plan(
     start_city: Optional[str] = None,
     end_city: Optional[str] = None,
     direct_flights_only: bool = False,
-    allow_midnight_flights: bool = True,
     flight_class_filter: str = "ALL",
     min_layover_hours: int = 10,
     max_layover_hours: int = 48,
+    no_fly_start_hour: Optional[int] = None,
+    no_fly_end_hour: Optional[int] = None,
 ) -> Optional[TravelPlan]:
     """
     Finds the best travel plan based on the user's criteria using a recursive search.
@@ -39,12 +40,21 @@ def find_best_travel_plan(
         if (flight.departure_city_code not in cities_choice) or \
            (flight.arrival_city_code not in cities_choice):
             continue
-        # Filter by midnight flights
-        if not allow_midnight_flights:
+        
+        # --- NEW Time-based flight filter ---
+        if no_fly_start_hour is not None and no_fly_end_hour is not None:
             dep_hour = flight.departure_time.hour
             arr_hour = flight.arrival_time.hour
-            if (dep_hour >= 23 or dep_hour < 6) or (arr_hour >= 23 or arr_hour < 6):
-                continue
+            
+            # Check if start and end times are on the same day or span across midnight
+            if no_fly_start_hour <= no_fly_end_hour:  # Same day range (e.g., 0 to 6)
+                if (no_fly_start_hour <= dep_hour < no_fly_end_hour) or \
+                   (no_fly_start_hour <= arr_hour < no_fly_end_hour):
+                    continue
+            else:  # Overnight range (e.g., 23 to 6)
+                if (dep_hour >= no_fly_start_hour or dep_hour < no_fly_end_hour) or \
+                   (arr_hour >= no_fly_start_hour or arr_hour < no_fly_end_hour):
+                    continue
         
         pre_filtered_flights.append(flight)
     
@@ -144,8 +154,7 @@ if __name__ == '__main__':
         cities_choice=[c.code for c in CITIES_BY_CODE.values()],
         num_countries=user_num_countries,
         min_layover_hours=10,
-        max_layover_hours=48,
-        allow_midnight_flights=False
+        max_layover_hours=48
     )
     
     if best_plan:
