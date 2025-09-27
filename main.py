@@ -70,10 +70,10 @@ def find_best_travel_plan(
     target_country_count = num_countries + 1 if start_city else num_countries
     
     for city_code in initial_cities:
-        visited_countries = set()
-        if start_city:
-            start_country = get_city_by_code(city_code).country
-            visited_countries = {start_country}
+        # Always initialize the visited_countries with the starting country.
+        # This is crucial for the revisit logic to work correctly from the first flight.
+        start_country = get_city_by_code(city_code).country
+        visited_countries = {start_country}
         
         countries_needed = target_country_count - len(visited_countries)
         heuristic_cost = max(0, countries_needed) * min_flight_duration
@@ -104,6 +104,16 @@ def find_best_travel_plan(
         if len(visited_countries) == target_country_count:
             if not end_city or (end_city and current_city_code == end_city):
                 new_plan = TravelPlan(flights=path)
+
+                # --- Final Filter for Unwanted Round Trips ---
+                # A plan is an unwanted round trip if it starts and ends in the same country,
+                # UNLESS the user explicitly requested it by setting start and end cities to the same value.
+                is_explicit_round_trip = start_city is not None and start_city == end_city
+                if not is_explicit_round_trip:
+                    origin_country = get_city_by_code(new_plan.flights[0].departure_city_code).country
+                    destination_country = get_city_by_code(new_plan.flights[-1].arrival_city_code).country
+                    if origin_country == destination_country:
+                        continue # Discard the plan
                 
                 # --- NEW DIVERSITY LOGIC ---
                 # Create a signature for the path based on the sequence of countries
