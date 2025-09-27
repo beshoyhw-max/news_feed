@@ -63,7 +63,7 @@ class Flight:
 class TravelPlan:
     flights: List[Flight] = field(default_factory=list)
     total_duration: timedelta = field(init=False)
-    
+
     def __post_init__(self):
         self.total_duration = sum((f.duration for f in self.flights), timedelta())
 

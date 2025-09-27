@@ -1,7 +1,10 @@
-from typing import List, Optional
+import heapq
+from typing import List, Optional, Dict, Tuple, Set
 from collections import defaultdict
-from datetime import timedelta
+from datetime import timedelta, datetime
+import itertools
 
+# Assuming these are defined in your project structure
 from data_handler import load_flights
 from models import TravelPlan, Flight, get_city_by_code, CITIES_BY_CODE
 
@@ -18,154 +21,187 @@ def find_best_travel_plan(
     max_layover_hours: int = 48,
     no_fly_start_hour: Optional[int] = None,
     no_fly_end_hour: Optional[int] = None,
-) -> Optional[TravelPlan]:
+    top_n: int = 3,  # Parameter to control how many best plans to find
+) -> List[TravelPlan]:
     """
-    Finds the best travel plan based on the user's criteria using a recursive search.
+    Finds the top_n best travel plans with distinctly different country paths.
     """
-    if not flights or not cities_choice or num_countries <= 0:
-        return None
+    verbose_logging = False
 
-    # --- NEW PRE-FILTERING STAGE ---
-    # Apply simple, non-recursive filters first to reduce the dataset.
-    print("Pre-filtering flights based on initial criteria...")
+    if not flights or not cities_choice:
+        return []
+
+    # --- Pre-filtering Stage ---
+    print("Pre-filtering flights based on user criteria...")
     pre_filtered_flights = []
     for flight in flights:
-        # Filter by flight class
-        if flight_class_filter != "ALL" and flight.flight_class != flight_class_filter:
-            continue
-        # Filter by direct flights
-        if direct_flights_only and flight.transfers > 0:
-            continue
-        # Filter by cities to include in the search
-        if (flight.departure_city_code not in cities_choice) or \
-           (flight.arrival_city_code not in cities_choice):
-            continue
+        if flight_class_filter != "ALL" and flight_class_filter not in flight.flight_class: continue
+        if direct_flights_only and flight.transfers > 0: continue
+        if (flight.departure_city_code not in cities_choice) or (flight.arrival_city_code not in cities_choice): continue
         
-        # --- NEW Time-based flight filter ---
         if no_fly_start_hour is not None and no_fly_end_hour is not None:
-            dep_hour = flight.departure_time.hour
-            arr_hour = flight.arrival_time.hour
-            
-            # Check if start and end times are on the same day or span across midnight
-            if no_fly_start_hour <= no_fly_end_hour:  # Same day range (e.g., 0 to 6)
-                if (no_fly_start_hour <= dep_hour < no_fly_end_hour) or \
-                   (no_fly_start_hour <= arr_hour < no_fly_end_hour):
-                    continue
-            else:  # Overnight range (e.g., 23 to 6)
-                if (dep_hour >= no_fly_start_hour or dep_hour < no_fly_end_hour) or \
-                   (arr_hour >= no_fly_start_hour or arr_hour < no_fly_end_hour):
-                    continue
-        
+            s, e = no_fly_start_hour, no_fly_end_hour
+            allowed_hours = set()
+            if s > e:
+                for h in range(e, s): allowed_hours.add(h)
+            else:
+                for h in range(0, 24):
+                    if not (s <= h < e): allowed_hours.add(h)
+            dep_h, arr_h = flight.departure_time.hour, flight.arrival_time.hour
+            if dep_h not in allowed_hours or arr_h not in allowed_hours: continue
+
         pre_filtered_flights.append(flight)
     
-    print(f"Reduced flight list from {len(flights)} to {len(pre_filtered_flights)} flights.")
-    
-    if not pre_filtered_flights:
-        return None
+    print(f"Reduced flight list to {len(pre_filtered_flights)} flights.")
+    if not pre_filtered_flights: return []
 
-    # 1. Prepare the NOW-SMALLER flight data for efficient lookup
+    min_flight_duration = min((f.duration for f in pre_filtered_flights if f.duration > timedelta(0)), default=timedelta(0))
+    print(f"Calculated minimum flight duration for heuristic: {min_flight_duration}")
+
     flights_by_departure_city = defaultdict(list)
-    for flight in pre_filtered_flights: # Use the filtered list
+    for flight in pre_filtered_flights:
         flights_by_departure_city[flight.departure_city_code].append(flight)
 
-    for city_flights in flights_by_departure_city.values():
-        city_flights.sort(key=lambda f: f.departure_datetime)
+    pq = [] 
+    visited: Dict[Tuple[str, frozenset], datetime] = {}
+    tie_breaker = itertools.count()
 
-    all_found_plans: List[TravelPlan] = []
+    initial_cities = [start_city] if start_city else cities_choice
     target_country_count = num_countries + 1 if start_city else num_countries
-    paths_explored_counter = 0
+    
+    for city_code in initial_cities:
+        visited_countries = set()
+        if start_city:
+            start_country = get_city_by_code(city_code).country
+            visited_countries = {start_country}
+        
+        countries_needed = target_country_count - len(visited_countries)
+        heuristic_cost = max(0, countries_needed) * min_flight_duration
+        initial_state = (heuristic_cost, timedelta(0), next(tie_breaker), [], visited_countries, city_code)
+        heapq.heappush(pq, initial_state)
 
-    # 3. The recursive search function now operates on a smaller dataset
-    def find_routes_recursive(current_path: List[Flight], visited_countries: set, last_departure_city):
-        nonlocal paths_explored_counter
-        paths_explored_counter += 1
-        if paths_explored_counter % 10000 == 0:
-            print(f"  ... still searching, {paths_explored_counter} paths explored ...")
+    print(f"Starting A* search. Initial queue size: {len(pq)}")
+    paths_explored = 0
+    found_plans = []
 
-        if all_found_plans and current_path:
-            current_duration = current_path[-1].arrival_datetime - current_path[0].departure_datetime
-            if current_duration > all_found_plans[0].total_duration:
-                return
+    while pq:
+        paths_explored += 1
+        if paths_explored % 100000 == 0:
+            print(f"  ... explored {paths_explored} paths ...")
+            
+        priority, duration, _, path, visited_countries, current_city_code = heapq.heappop(pq)
+        
+        current_arrival_time = path[-1].arrival_datetime if path else datetime.min
+        visited_key = (current_city_code, frozenset(visited_countries))
+
+        if visited_key in visited and visited[visited_key] <= current_arrival_time:
+            continue
+        visited[visited_key] = current_arrival_time
+        
+        if found_plans and duration > found_plans[-1].total_duration and len(found_plans) == top_n:
+            continue
 
         if len(visited_countries) == target_country_count:
-            if not end_city or (current_path and current_path[-1].arrival_city_code == end_city):
-                new_plan = TravelPlan(flights=list(current_path))
-                all_found_plans.append(new_plan)
-                all_found_plans.sort(key=lambda p: p.total_duration)
-                print(f"  > Found a potential plan with duration {new_plan.total_duration}. Still searching for a better one...")
-            return
+            if not end_city or (end_city and current_city_code == end_city):
+                new_plan = TravelPlan(flights=path)
+                
+                # --- NEW DIVERSITY LOGIC ---
+                # Create a signature for the path based on the sequence of countries
+                countries_in_order = [get_city_by_code(path[0].departure_city_code).country]
+                for flight in path:
+                    arrival_country = get_city_by_code(flight.arrival_city_code).country
+                    if arrival_country != countries_in_order[-1]:
+                        countries_in_order.append(arrival_country)
+                path_signature = tuple(countries_in_order)
 
-        potential_next_flights = flights_by_departure_city.get(last_departure_city, [])
-        
-        for flight in potential_next_flights:
+                # Check if a plan with the same path signature already exists
+                existing_plan_index = -1
+                for i, plan in enumerate(found_plans):
+                    existing_countries = [get_city_by_code(plan.flights[0].departure_city_code).country]
+                    for f in plan.flights:
+                        ac = get_city_by_code(f.arrival_city_code).country
+                        if ac != existing_countries[-1]:
+                            existing_countries.append(ac)
+                    if tuple(existing_countries) == path_signature:
+                        existing_plan_index = i
+                        break
+
+                if existing_plan_index != -1:
+                    # A plan with this path exists. Replace it if the new one is better.
+                    if new_plan.total_duration < found_plans[existing_plan_index].total_duration:
+                        found_plans[existing_plan_index] = new_plan
+                        found_plans.sort(key=lambda p: p.total_duration)
+                else:
+                    # This is a new, unique path. Add it if there's space or it's better than the worst.
+                    if len(found_plans) < top_n:
+                        found_plans.append(new_plan)
+                        found_plans.sort(key=lambda p: p.total_duration)
+                    elif new_plan.total_duration < found_plans[-1].total_duration:
+                        found_plans.pop()
+                        found_plans.append(new_plan)
+                        found_plans.sort(key=lambda p: p.total_duration)
+                continue
+                # --- END DIVERSITY LOGIC ---
+
+        for flight in flights_by_departure_city.get(current_city_code, []):
+            if path:
+                layover = flight.departure_datetime - path[-1].arrival_datetime
+                if not (timedelta(hours=min_layover_hours) <= layover <= timedelta(hours=max_layover_hours)):
+                    continue
+
             arrival_city = get_city_by_code(flight.arrival_city_code)
+            if not arrival_city: continue
+
+            is_revisit = arrival_city.country in visited_countries
+            is_valid_return_flight = (is_revisit and end_city == start_city and arrival_city.code == end_city and len(visited_countries) == target_country_count)
             
-            # Simplified checks, as some were already done in pre-filtering
-            if not arrival_city:
+            if is_revisit and not is_valid_return_flight:
+                continue
+            
+            new_visited_countries = visited_countries.union({arrival_city.country})
+            
+            if len(new_visited_countries) > target_country_count:
                 continue
 
-            # The complex, state-dependent checks remain here
-            if current_path:
-                last_flight = current_path[-1]
-                if flight.arrival_city_code == last_flight.departure_city_code:
-                    continue
-                
-                layover_duration = flight.departure_datetime - last_flight.arrival_datetime
-                if not (timedelta(hours=min_layover_hours) <= layover_duration <= timedelta(hours=max_layover_hours)):
-                    continue
-            
-            if arrival_city.country not in visited_countries:
-                new_visited_countries = visited_countries.union({arrival_city.country})
-                find_routes_recursive(
-                    current_path + [flight],
-                    new_visited_countries,
-                    flight.arrival_city_code
-                )
+            new_path = path + [flight]
+            new_duration = sum((f.duration for f in new_path), timedelta())
+            countries_needed = target_country_count - len(new_visited_countries)
+            heuristic_cost = max(0, countries_needed) * min_flight_duration
+            new_priority = new_duration + heuristic_cost
+            new_state = (new_priority, new_duration, next(tie_breaker), new_path, new_visited_countries, flight.arrival_city_code)
+            heapq.heappush(pq, new_state)
 
-    # 4. Start the search
-    initial_cities = [start_city] if start_city else cities_choice
-    for city_code in initial_cities:
-        start_country = get_city_by_code(city_code).country
-        find_routes_recursive(
-            current_path=[],
-            visited_countries={start_country},
-            last_departure_city=city_code
-        )
-    
-    return all_found_plans[0] if all_found_plans else None
-
+    if found_plans:
+        print(f"--- Search complete. Found {len(found_plans)} best plans. ---")
+    else:
+        print("--- Search complete. No valid plan found. ---")
+        
+    return found_plans
 
 if __name__ == '__main__':
-    print("Loading flight data...")
+    print("--- Running Test Search from main.py ---")
     all_flights = load_flights("merged_flight_data.xlsx")
     if not all_flights:
-        print("Could not load flight data. Exiting.")
-        exit()
+        print("Could not load flight data. Exiting."); exit()
     print(f"Loaded {len(all_flights)} flights.")
 
-    user_start_city = "ABJ"
-    user_num_countries = 5
-    
-    print(f"\nSearching for a {user_num_countries}-country travel plan...")
-    
-    best_plan = find_best_travel_plan(
+    best_plans = find_best_travel_plan(
         flights=all_flights,
-        start_city=user_start_city,
+        start_city="CAI",
         cities_choice=[c.code for c in CITIES_BY_CODE.values()],
-        num_countries=user_num_countries,
+        num_countries=4,
         min_layover_hours=10,
-        max_layover_hours=48
+        max_layover_hours=72
     )
     
-    if best_plan:
-        print("\n--- Best Travel Plan Found! ---")
-        for i, flight in enumerate(best_plan.flights):
-            dep_city = get_city_by_code(flight.departure_city_code)
-            arr_city = get_city_by_code(flight.arrival_city_code)
-            print(
-                f"  {i+1}. {dep_city.name} ({dep_city.code}) -> {arr_city.name} ({arr_city.code})"
-                f" | Departs: {flight.departure_datetime}, Arrives: {flight.arrival_datetime}"
-            )
-        print(f"\nTotal flight duration: {best_plan.total_duration}")
+    if best_plans:
+        for i, plan in enumerate(best_plans):
+            print(f"\n--- Plan {i+1} ---")
+            print(f"Total flight duration: {plan.total_duration}")
+            for flight in plan.flights:
+                dep_city = get_city_by_code(flight.departure_city_code)
+                arr_city = get_city_by_code(flight.arrival_city_code)
+                print(f"  {dep_city.code} -> {arr_city.code} | {flight.departure_datetime} -> {flight.arrival_datetime}")
     else:
-        print("\nNo travel plan found matching the criteria.")
+        print("\nNo travel plan found matching the criteria for the test case.")
+

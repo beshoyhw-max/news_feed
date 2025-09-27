@@ -119,8 +119,8 @@ def load_flights(
                 
                 flight_number = ''.join(re.findall(r'[A-Z0-9]', str(row['Plane'])))
 
-                # Handle flight class, making it case-insensitive and matching 'Business'/'Economy'
-                flight_class = str(row.get('flight_class', 'Economy')).strip().capitalize()
+                # Handle flight class; get the value from the correct 'Flight Class' column.
+                flight_class = str(row.get('Flight Class', 'Economy')).strip()
 
                 # Create Flight object
                 flight = Flight(

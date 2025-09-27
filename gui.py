@@ -1,275 +1,311 @@
-import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
+import flet as ft
 import threading
-
+from datetime import timedelta
 from main import find_best_travel_plan
 from data_handler import load_flights
-from models import CITIES_BY_CODE, get_city_by_code, CITIES, City
+from models import CITIES_BY_CODE, get_city_by_code, TravelPlan
 
+# --- Helper Functions ---
+def format_delta(td: timedelta) -> str:
+    """Formats a timedelta into a readable string like '3d 4h 5m' or '12h 30m'."""
+    days = td.days
+    hours, remainder = divmod(td.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    if days > 0:
+        return f"{days}d {int(hours)}h {int(minutes)}m"
+    return f"{int(hours)}h {int(minutes)}m"
 
-class ScrolledCheckboxList(tk.Frame):
-    def __init__(self, parent, choices, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.vars = {}
-        
-        # --- Select All Checkbox ---
-        self.select_all_var = tk.BooleanVar()
-        self.select_all_button = ttk.Checkbutton(self, text="Select All", variable=self.select_all_var, command=self.toggle_all)
-        self.select_all_button.pack(anchor='w', padx=5, pady=2)
-        
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        self.scrollable_frame = ttk.Frame(canvas)
+# --- Main Application ---
+def main(page: ft.Page):
+    page.title = "Executive Travel Plan Finder"
+    page.window_width = 1600
+    page.window_height = 950
+    page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_GREY, font_family="Microsoft YaHei")
+    page.bgcolor = ft.Colors.GREY_200
 
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+    # --- Application State ---
+    all_flights = []
+    search_results = []
+    city_name_to_code_map = {f"{city.country_cn} - {city.name_cn}": city.code for city in CITIES_BY_CODE.values()}
+    sorted_cities = sorted(CITIES_BY_CODE.values(), key=lambda c: (c.country_cn, c.name_cn))
+    city_display_names = [ft.dropdown.Option(text) for text in [f"{city.country_cn} - {city.name_cn}" for city in sorted_cities]]
 
-        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+    # --- UI Controls ---
+    # Route Options
+    start_city_dd = ft.Dropdown(label="出发城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
+    end_city_dd = ft.Dropdown(label="目的城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
+    num_countries_tf = ft.TextField(label="访问国家数量", value="3", width=150, disabled=True)
 
-        for city_obj in choices:
-            self.vars[city_obj.code] = tk.BooleanVar()
-            # New format: Country (CN) - City (CN) (Code)
-            display_text = f"{city_obj.country_cn} - {city_obj.name_cn} ({city_obj.code})"
-            ttk.Checkbutton(self.scrollable_frame, text=display_text, variable=self.vars[city_obj.code]).pack(anchor='w', padx=5, pady=2)
+    # Flight Preferences
+    min_layover_tf = ft.TextField(label="最短停留 (小时)", value="10", width=150, disabled=True)
+    max_layover_tf = ft.TextField(label="最长停留 (小时)", value="48", width=150, disabled=True)
+    flight_class_rg = ft.RadioGroup(content=ft.Row([
+        ft.Radio(value="ALL", label="任何"),
+        ft.Radio(value="Economy", label="经济舱"),
+        ft.Radio(value="Business", label="商务舱"),
+    ]), value="ALL", disabled=True)
+    direct_only_cb = ft.Checkbox(label="仅限直飞航班", value=False, disabled=True)
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+    # Time Filter
+    no_fly_start_tf = ft.TextField(label="从", value="23", width=70, disabled=True)
+    no_fly_end_tf = ft.TextField(label="至", value="6", width=70, disabled=True)
+    def toggle_time_filter(e):
+        is_enabled = e.control.value
+        no_fly_start_tf.disabled = not is_enabled
+        no_fly_end_tf.disabled = not is_enabled
+        page.update()
+    no_fly_cb = ft.Checkbox(label="启用禁飞时段", on_change=toggle_time_filter, value=False, disabled=True)
+    
+    # Cities Checklist
+    cities_checklist = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, expand=True)
+    city_checkboxes = []
+    for city in sorted_cities:
+        cb = ft.Checkbox(label=f"{city.country_cn} - {city.name_cn} ({city.code})")
+        city_checkboxes.append((cb, city.code))
+        cities_checklist.controls.append(cb)
+    
+    def toggle_all_cities(e):
+        for cb, _ in city_checkboxes:
+            cb.value = e.control.value
+        page.update()
+    select_all_cities_cb = ft.Checkbox(label="Select All / Deselect All", on_change=toggle_all_cities)
 
-    def get_checked(self):
-        return [code for code, var in self.vars.items() if var.get()]
-        
-    def toggle_all(self):
-        # Set all checkboxes to the state of the 'Select All' button
-        is_checked = self.select_all_var.get()
-        for var in self.vars.values():
-            var.set(is_checked)
+    # Action Button
+    find_button = ft.ElevatedButton(text="Find Optimal Plans", icon=ft.Icons.TRAVEL_EXPLORE, height=50, disabled=True)
+    
+    # Results Display
+    results_view = ft.Column(
+        alignment=ft.MainAxisAlignment.START,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        scroll=ft.ScrollMode.ADAPTIVE,
+        expand=True
+    )
+    
+    # --- Banner for Errors/Warnings ---
+    def close_banner(e):
+        page.banner.open = False
+        page.update()
 
-
-class TravelApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Travel Plan Finder")
-        self.root.geometry("1200x800")
-
-        # --- Styling ---
-        style = ttk.Style()
-        style.configure("TLabel", font=("Helvetica", 12))
-        style.configure("Bold.TLabel", font=("Helvetica", 12, "bold"))
-        style.configure("TButton", font=("Helvetica", 12, "bold"))
-        style.configure("TCombobox", font=("Helvetica", 12))
-        style.configure("TSpinbox", font=("Helvetica", 12))
-        style.configure("TRadiobutton", font=("Helvetica", 12))
-        style.configure("TCheckbutton", font=("Helvetica", 12))
-        style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold"))
-        style.configure("Treeview.Heading", font=("Helvetica", 12, "bold"))
-
-        self.flights = load_flights("merged_flight_data.xlsx")
-        if not self.flights:
-            messagebox.showerror("Error", "Could not load flight data. Exiting.")
-            self.root.destroy()
-            return
-            
-        self.search_thread = None
-        self.search_result = None
-
-        self.city_name_to_code_map = {f"{city.country_cn} - {city.name_cn}": city.code for city in CITIES_BY_CODE.values()}
-        sorted_cities = sorted(CITIES_BY_CODE.values(), key=lambda c: (c.country_cn, c.name_cn))
-        city_display_names = [f"{city.country_cn} - {city.name_cn}" for city in sorted_cities]
-
-        main_frame = ttk.Frame(root, padding="20")
-        main_frame.pack(fill="both", expand=True)
-        
-        controls_column = ttk.Frame(main_frame)
-        controls_column.pack(side="left", fill="y", padx=(0, 20), pady=5)
-
-        results_frame = ttk.LabelFrame(main_frame, text="Best Travel Plan", padding="10")
-        results_frame.pack(side="right", fill="both", expand=True, padx=5, pady=5)
-        
-        route_options_frame = ttk.LabelFrame(controls_column, text="行程选项", padding="15")
-        route_options_frame.pack(fill='x', pady=10, anchor='n')
-
-        ttk.Label(route_options_frame, text="出发城市:", style="Bold.TLabel").pack(anchor='w')
-        self.start_city_combo = ttk.Combobox(route_options_frame, values=["Any"] + city_display_names)
-        self.start_city_combo.pack(fill='x', pady=5)
-        self.start_city_combo.set("Any")
-
-        ttk.Label(route_options_frame, text="目的城市:", style="Bold.TLabel").pack(anchor='w')
-        self.end_city_combo = ttk.Combobox(route_options_frame, values=["Any"] + city_display_names)
-        self.end_city_combo.pack(fill='x', pady=5)
-        self.end_city_combo.set("Any")
-        
-        ttk.Label(route_options_frame, text="访问国家数量:", style="Bold.TLabel").pack(anchor='w')
-        self.num_countries_spinbox = ttk.Spinbox(route_options_frame, from_=1, to=10)
-        self.num_countries_spinbox.pack(fill='x', pady=5)
-        self.num_countries_spinbox.set("3")
-
-        flight_prefs_frame = ttk.LabelFrame(controls_column, text="航班偏好", padding="15")
-        flight_prefs_frame.pack(fill='x', pady=10, anchor='n')
-
-        ttk.Label(flight_prefs_frame, text="最短停留 (小时):", style="Bold.TLabel").pack(anchor='w')
-        self.min_layover_spinbox = ttk.Spinbox(flight_prefs_frame, from_=1, to=100)
-        self.min_layover_spinbox.pack(fill='x', pady=5)
-        self.min_layover_spinbox.set("10")
-
-        ttk.Label(flight_prefs_frame, text="最长停留 (小时):", style="Bold.TLabel").pack(anchor='w')
-        self.max_layover_spinbox = ttk.Spinbox(flight_prefs_frame, from_=1, to=100)
-        self.max_layover_spinbox.pack(fill='x', pady=5)
-        self.max_layover_spinbox.set("48")
-        
-        class_frame = ttk.Frame(flight_prefs_frame)
-        class_frame.pack(fill='x', pady=(10, 5))
-        ttk.Label(class_frame, text="舱位等级:", style="Bold.TLabel").pack(anchor='w')
-        self.flight_class = tk.StringVar(value="ALL")
-        ttk.Radiobutton(class_frame, text="任何", variable=self.flight_class, value="ALL").pack(anchor='w')
-        ttk.Radiobutton(class_frame, text="经济舱", variable=self.flight_class, value="Economy").pack(anchor='w')
-        ttk.Radiobutton(class_frame, text="商务舱", variable=self.flight_class, value="Business").pack(anchor='w')
-        
-        self.direct_only_var = tk.BooleanVar()
-        ttk.Checkbutton(flight_prefs_frame, text="仅限直飞航班", variable=self.direct_only_var).pack(anchor='w', pady=10)
-        
-        time_filter_frame = ttk.LabelFrame(controls_column, text="禁飞时段", padding="15")
-        time_filter_frame.pack(fill='x', pady=10, anchor='n')
-        
-        self.no_fly_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(time_filter_frame, text="启用禁飞时段", variable=self.no_fly_enabled).pack(anchor='w')
-        
-        time_frame = ttk.Frame(time_filter_frame)
-        time_frame.pack(fill='x', pady=5)
-        ttk.Label(time_frame, text="从:").pack(side='left', padx=(0, 5))
-        self.no_fly_start_spinbox = ttk.Spinbox(time_frame, from_=0, to=23, width=4)
-        self.no_fly_start_spinbox.pack(side='left')
-        self.no_fly_start_spinbox.set("23")
-        ttk.Label(time_frame, text="至:").pack(side='left', padx=5)
-        self.no_fly_end_spinbox = ttk.Spinbox(time_frame, from_=0, to=23, width=4)
-        self.no_fly_end_spinbox.pack(side='left')
-        self.no_fly_end_spinbox.set("6")
-
-        self.find_button = ttk.Button(controls_column, text="查找最佳旅行计划", command=self.find_plan, style="TButton")
-        self.find_button.pack(fill='x', pady=20, anchor='s')
-        
-        cities_frame = ttk.LabelFrame(controls_column, text="搜索城市范围", padding="10")
-        cities_frame.pack(fill="both", expand=True, pady=10, anchor='n')
-        self.cities_list = ScrolledCheckboxList(cities_frame, sorted_cities)
-        self.cities_list.pack(fill="both", expand=True)
-
-        # --- Results Treeview ---
-        columns = ("#", "route", "departs", "arrives", "airline", "class", "transfers")
-        self.results_tree = ttk.Treeview(results_frame, columns=columns, show="headings", style="Treeview")
-        
-        self.results_tree.heading("#", text="#")
-        self.results_tree.heading("route", text="路线")
-        self.results_tree.heading("departs", text="出发时间")
-        self.results_tree.heading("arrives", text="到达时间")
-        self.results_tree.heading("airline", text="航空公司")
-        self.results_tree.heading("class", text="舱位")
-        self.results_tree.heading("transfers", text="中转信息")
-
-        self.results_tree.column("#", width=40, anchor='center', stretch=False)
-        self.results_tree.column("route", width=250)
-        self.results_tree.column("departs", width=150, anchor='center')
-        self.results_tree.column("arrives", width=150, anchor='center')
-        self.results_tree.column("airline", width=150)
-        self.results_tree.column("class", width=80, anchor='center')
-        self.results_tree.column("transfers", width=200)
-
-        tree_scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_tree.yview)
-        self.results_tree.configure(yscrollcommand=tree_scrollbar.set)
-        
-        self.results_tree.pack(side="left", fill="both", expand=True)
-        tree_scrollbar.pack(side="right", fill="y")
-
-    def find_plan(self):
-        start_city_display = self.start_city_combo.get()
-        start_city_val = self.city_name_to_code_map.get(start_city_display) if start_city_display != "Any" else None
-            
-        end_city_display = self.end_city_combo.get()
-        end_city_val = self.city_name_to_code_map.get(end_city_display) if end_city_display != "Any" else None
+    page.banner = ft.Banner(
+        bgcolor=ft.Colors.AMBER_100,
+        leading=ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER, size=40),
+        content=ft.Text(""), # Content will be set dynamically
+        actions=[
+            ft.TextButton("OK", on_click=close_banner),
+        ]
+    )
+    
+    # --- Event Handlers ---
+    def find_plan_click(e):
+        find_button.disabled = True
+        results_view.controls.clear()
+        results_view.alignment = ft.MainAxisAlignment.CENTER
+        results_view.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        results_view.controls.append(ft.ProgressRing())
+        results_view.controls.append(ft.Text("Calculating optimal routes...", size=16))
+        page.update()
 
         try:
-            num_countries_val = int(self.num_countries_spinbox.get())
-            min_layover_val = int(self.min_layover_spinbox.get())
-            max_layover_val = int(self.max_layover_spinbox.get())
-            
-            no_fly_start = int(self.no_fly_start_spinbox.get()) if self.no_fly_enabled.get() else None
-            no_fly_end = int(self.no_fly_end_spinbox.get()) if self.no_fly_enabled.get() else None
-
+            params = {
+                "start_city": city_name_to_code_map.get(start_city_dd.value) if start_city_dd.value != "Any" else None,
+                "end_city": city_name_to_code_map.get(end_city_dd.value) if end_city_dd.value != "Any" else None,
+                "num_countries": int(num_countries_tf.value),
+                "min_layover_hours": int(min_layover_tf.value),
+                "max_layover_hours": int(max_layover_tf.value),
+                "no_fly_start_hour": int(no_fly_start_tf.value) if no_fly_cb.value else None,
+                "no_fly_end_hour": int(no_fly_end_tf.value) if no_fly_cb.value else None,
+                "cities_choice": [code for cb, code in city_checkboxes if cb.value],
+                "flight_class_filter": flight_class_rg.value,
+                "direct_flights_only": direct_only_cb.value
+            }
         except ValueError:
-            messagebox.showerror("Error", "Please enter valid numbers for countries and layover hours.")
+            page.banner.content = ft.Text("Error: Please enter valid numbers for all numeric fields.")
+            page.banner.bgcolor = ft.Colors.RED_100
+            page.banner.leading = ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED, size=40)
+            page.banner.open = True
+            find_button.disabled = False
+            results_view.controls.clear()
+            page.update()
             return
-
-        cities_choice_val = self.cities_list.get_checked()
-        if not cities_choice_val:
-            messagebox.showwarning("Warning", "Please select at least one city to include in the search.")
-            return
-
-        self.find_button.config(state="disabled")
-        for item in self.results_tree.get_children():
-            self.results_tree.delete(item)
-        self.results_tree.insert("", "end", values=("", "正在搜索最佳旅行计划，请稍候...", "", "", "", "", ""))
-
-
-        self.search_thread = threading.Thread(
-            target=self.run_search,
-            args=(cities_choice_val, num_countries_val, start_city_val, end_city_val, min_layover_val, max_layover_val, no_fly_start, no_fly_end)
-        )
-        self.search_thread.start()
-        self.check_for_result()
-
-    def run_search(self, cities_choice, num_countries, start_city, end_city, min_layover, max_layover, no_fly_start, no_fly_end):
-        plan = find_best_travel_plan(
-            flights=self.flights,
-            cities_choice=cities_choice,
-            num_countries=num_countries,
-            start_city=start_city,
-            end_city=end_city,
-            flight_class_filter=self.flight_class.get(),
-            direct_flights_only=self.direct_only_var.get(),
-            min_layover_hours=min_layover,
-            max_layover_hours=max_layover,
-            no_fly_start_hour=no_fly_start,
-            no_fly_end_hour=no_fly_end
-        )
-        self.search_result = plan
-
-    def check_for_result(self):
-        if self.search_thread.is_alive():
-            self.root.after(100, self.check_for_result)
-        else:
-            self.display_result()
-
-    def display_result(self):
-        self.find_button.config(state="normal")
-        for item in self.results_tree.get_children():
-            self.results_tree.delete(item)
-            
-        plan = self.search_result
-        if plan:
-            for i, flight in enumerate(plan.flights):
-                dep_city = get_city_by_code(flight.departure_city_code)
-                arr_city = get_city_by_code(flight.arrival_city_code)
-                
-                route_str = f"{dep_city.name_cn} ({dep_city.code}) → {arr_city.name_cn} ({arr_city.code})"
-                airline_str = f"{flight.airline} ({flight.flight_number})"
-                
-                self.results_tree.insert("", "end", values=(
-                    i + 1,
-                    route_str,
-                    flight.departure_datetime.strftime('%Y-%m-%d %H:%M'),
-                    flight.arrival_datetime.strftime('%Y-%m-%d %H:%M'),
-                    airline_str,
-                    flight.flight_class,
-                    flight.transfer_info
-                ))
-        else:
-            self.results_tree.insert("", "end", values=("", "未找到符合条件的旅行计划。", "", "", "", "", ""))
         
-        self.search_result = None
+        if not params["cities_choice"]:
+            page.banner.content = ft.Text("Warning: Please select at least one city in the search scope.")
+            page.banner.bgcolor = ft.Colors.AMBER_100
+            page.banner.leading = ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER, size=40)
+            page.banner.open = True
+            find_button.disabled = False
+            results_view.controls.clear()
+            page.update()
+            return
 
-if __name__ == '__main__':
-    root = tk.Tk()
-    app = TravelApp(root)
-    root.mainloop()
+        thread = threading.Thread(target=run_search, args=(params,), daemon=True)
+        thread.start()
+        
+    def run_search(params):
+        nonlocal search_results
+        search_results = find_best_travel_plan(flights=all_flights, **params)
+        display_results()
+
+    def display_results():
+        results_view.alignment = ft.MainAxisAlignment.START
+        results_view.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
+        results_view.controls.clear()
+
+        if not search_results:
+            centered_message = ft.Container(
+                ft.Text("No travel plans found matching the specified criteria.", size=18, italic=True),
+                alignment=ft.alignment.center,
+                expand=True
+            )
+            results_view.controls.append(centered_message)
+        else:
+            summary = ft.Text(f"Found {len(search_results)} optimal and diverse travel plans.", size=18, weight=ft.FontWeight.BOLD)
+            results_view.controls.append(summary)
+            
+            for i, plan in enumerate(search_results):
+                results_view.controls.append(create_plan_card(plan, i+1))
+        
+        find_button.disabled = False
+        page.update()
+
+    def create_plan_card(plan, plan_num):
+        flight_legs = []
+        for i, flight in enumerate(plan.flights):
+            dep_city = get_city_by_code(flight.departure_city_code)
+            arr_city = get_city_by_code(flight.arrival_city_code)
+            
+            flight_legs.append(
+                ft.Row(
+                    [
+                        ft.Text(f"{i+1}.", weight=ft.FontWeight.BOLD, width=30),
+                        ft.Column(
+                            [
+                                ft.Text(f"{dep_city.name_cn} ({dep_city.code}) to {arr_city.name_cn} ({arr_city.code})", weight=ft.FontWeight.BOLD),
+                                ft.Text(f"{flight.airline} {flight.flight_number} • {flight.flight_class} • {flight.transfer_info} • Flight Time: {format_delta(flight.duration)}", color=ft.Colors.GREY_600, size=12)
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text(f"Depart: {flight.departure_datetime.strftime('%Y-%m-%d %H:%M')}"),
+                                ft.Text(f"Arrive:  {flight.arrival_datetime.strftime('%Y-%m-%d %H:%M')}")
+                            ],
+                            spacing=2,
+                            horizontal_alignment=ft.CrossAxisAlignment.END
+                        )
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER
+                )
+            )
+
+        route_summary = " → ".join([get_city_by_code(f.departure_city_code).country_cn for f in plan.flights] + [get_city_by_code(plan.flights[-1].arrival_city_code).country_cn])
+
+        return ft.Card(
+            ft.Container(
+                ft.Column([
+                    ft.Container(
+                        ft.Row([
+                            ft.Text(f"Option {plan_num}", size=20, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"Total Flight Time: {format_delta(plan.total_duration)}", size=16),
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        bgcolor=ft.Colors.BLUE_GREY_50,
+                        padding=15,
+                        border_radius=ft.border_radius.only(top_left=8, top_right=8)
+                    ),
+                    ft.Container(
+                        ft.Column([
+                            ft.Text(route_summary, weight=ft.FontWeight.BOLD, size=16),
+                            ft.Divider(height=10),
+                            *flight_legs
+                        ]),
+                        padding=15
+                    )
+                ]),
+                border_radius=8,
+                border=ft.border.all(1, ft.Colors.GREY_300)
+            )
+        )
+
+    find_button.on_click = find_plan_click
+    
+    # --- Layout ---
+    controls_panel = ft.Container(
+        ft.Column(
+            [
+                ft.Text("Itinerary Criteria", size=22, weight=ft.FontWeight.BOLD),
+                ft.Text("Route Options", size=16, weight=ft.FontWeight.BOLD),
+                start_city_dd, end_city_dd, num_countries_tf,
+                ft.Divider(height=20),
+                ft.Text("Flight Preferences", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([min_layover_tf, max_layover_tf]),
+                ft.Text("舱位等级:"), flight_class_rg, direct_only_cb,
+                ft.Divider(height=20),
+                ft.Text("Time Filter", size=16, weight=ft.FontWeight.BOLD),
+                no_fly_cb, ft.Row([no_fly_start_tf, no_fly_end_tf]),
+                ft.Divider(height=20),
+                find_button,
+                ft.Divider(height=20),
+                ft.Text("Search Scope", size=16, weight=ft.FontWeight.BOLD),
+                select_all_cities_cb,
+                cities_checklist
+            ],
+            scroll=ft.ScrollMode.ADAPTIVE
+        ),
+        bgcolor=ft.Colors.WHITE,
+        padding=20,
+        border_radius=8,
+        expand=True
+    )
+    
+    results_panel = ft.Container(
+        ft.Column([
+            ft.Text("Executive Itinerary Proposal", size=28, weight=ft.FontWeight.BOLD),
+            ft.Divider(height=20),
+            results_view,
+        ]),
+        padding=30,
+        expand=True
+    )
+
+    page.add(
+        ft.Row(
+            [
+                ft.Column([controls_panel], width=500),
+                ft.Column([results_panel], expand=True),
+            ],
+            expand=True
+        )
+    )
+
+    # --- Initial Data Loading in Background ---
+    def load_initial_data():
+        nonlocal all_flights
+        print("Loading flight data...")
+        all_flights = load_flights("merged_flight_data.xlsx")
+        print(f"Loaded {len(all_flights)} flights.")
+        
+        def enable_controls():
+            for ctrl in [start_city_dd, end_city_dd, num_countries_tf, min_layover_tf, max_layover_tf, flight_class_rg, direct_only_cb, no_fly_cb, find_button]:
+                ctrl.disabled = False
+            loading_overlay.visible = False
+            page.update()
+        
+        enable_controls()
+
+    loading_overlay = ft.Container(
+        ft.Column([ft.ProgressRing(), ft.Text("Loading Flight Data...", size=18)]),
+        alignment=ft.alignment.center,
+        expand=True,
+        bgcolor="rgba(255, 255, 255, 0.8)"
+    )
+    
+    page.overlay.append(loading_overlay)
+    page.update()
+
+    load_thread = threading.Thread(target=load_initial_data, daemon=True)
+    load_thread.start()
+
+if __name__ == "__main__":
+    ft.app(target=main)
+
