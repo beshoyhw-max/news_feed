@@ -85,7 +85,22 @@ def main(page: ft.Page):
         page.update()
     no_fly_cb = ft.Checkbox(label="启用禁飞时段", on_change=toggle_time_filter, value=False, disabled=True)
     
-    # Cities Checklist
+    # --- NEW: Forced Cities Checklist ---
+    forced_cities_checklist = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, expand=True)
+    forced_city_checkboxes = []
+    for city in sorted_cities:
+        cb = ft.Checkbox(label=f"{city.name_cn} ({city.code})", disabled=True)
+        forced_city_checkboxes.append((cb, city.code))
+        forced_cities_checklist.controls.append(cb)
+
+    def toggle_all_forced_cities(e):
+        for cb, _ in forced_city_checkboxes:
+            cb.value = e.control.value
+        page.update()
+    select_all_forced_cities_cb = ft.Checkbox(label="Select All / Deselect All", on_change=toggle_all_forced_cities, disabled=True)
+
+
+    # Search Scope Cities Checklist
     cities_checklist = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, expand=True)
     city_checkboxes = []
     for city in sorted_cities:
@@ -147,6 +162,8 @@ def main(page: ft.Page):
                 results_view.controls.clear()
                 page.update()
                 return
+            
+            forced_city_codes = [code for cb, code in forced_city_checkboxes if cb.value]
 
             params = {
                 "start_date": start_date,
@@ -160,7 +177,8 @@ def main(page: ft.Page):
                 "no_fly_end_hour": int(no_fly_end_tf.value) if no_fly_cb.value else None,
                 "cities_choice": [code for cb, code in city_checkboxes if cb.value],
                 "flight_class_filter": flight_class_rg.value,
-                "direct_flights_only": direct_only_cb.value
+                "direct_flights_only": direct_only_cb.value,
+                "forced_cities": forced_city_codes
             }
         except ValueError:
             page.banner.content = ft.Text("Error: Please enter valid numbers for all numeric fields.")
@@ -292,6 +310,10 @@ def main(page: ft.Page):
                 ft.Text("Time Filter", size=16, weight=ft.FontWeight.BOLD),
                 no_fly_cb, ft.Row([no_fly_start_tf, no_fly_end_tf]),
                 ft.Divider(height=20),
+                ft.Text("Forced Cities (Optional)", size=16, weight=ft.FontWeight.BOLD),
+                select_all_forced_cities_cb,
+                ft.Container(content=forced_cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=150),
+                ft.Divider(height=20),
                 find_button,
                 ft.Divider(height=20),
                 ft.Text("Search Scope", size=16, weight=ft.FontWeight.BOLD),
@@ -338,9 +360,14 @@ def main(page: ft.Page):
                 start_city_dd, end_city_dd, num_countries_tf,
                 min_layover_tf, max_layover_tf, flight_class_rg,
                 direct_only_cb, no_fly_cb, find_button,
-                start_date_tf, end_date_tf, start_date_button, end_date_button
+                start_date_tf, end_date_tf, start_date_button, end_date_button,
+                select_all_forced_cities_cb, select_all_cities_cb
             ]:
                 ctrl.disabled = False
+            
+            for cb, _ in forced_city_checkboxes:
+                cb.disabled = False
+            
             loading_overlay.visible = False
             page.update()
         
