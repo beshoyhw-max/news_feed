@@ -1,10 +1,30 @@
 import pandas as pd
 import re
 from datetime import datetime, timedelta, date
-from typing import List
+from typing import List, Tuple, Optional
 from collections import defaultdict
 
 from models import Flight
+
+def parse_arrival_info(arrival_str: str) -> Tuple[Optional[str], int]:
+    """
+    Parses a complex arrival string like '19:00 +1天' or '23:45'
+    into a time string and a day offset.
+    """
+    if not isinstance(arrival_str, str):
+        return None, 0
+
+    parts = arrival_str.strip().split(' ')
+    time_str = parts[0]
+    days_offset = 0
+
+    if len(parts) > 1:
+        day_part = parts[-1]
+        match = re.search(r'\+(\d+)', day_part)
+        if match:
+            days_offset = int(match.group(1))
+            
+    return time_str, days_offset
 
 def parse_duration(duration_str: str) -> timedelta:
     """Parses a duration string (e.g., '19小时20分', '1天20分') into a timedelta object."""
@@ -80,8 +100,6 @@ def load_flights(
                 
                 # Make sure times are read as strings before parsing
                 departure_time_str = str(row['Departure Time'])
-                arrival_time_str = str(row['Arrival Time'])
-
                 # Handle cases where time might be just 'HH:MM' without seconds
                 try:
                     departure_time = datetime.strptime(departure_time_str, '%H:%M').time()
@@ -93,10 +111,19 @@ def load_flights(
                 # Duration is parsed from the 'Total Time' column (source of truth)
                 duration = parse_duration(row['Total Time'])
                 
-                # Arrival datetime is now correctly calculated from the departure time and true duration
-                arrival_datetime = departure_datetime + duration
-                arrival_time = arrival_datetime.time()
-                
+                arrival_time_str_raw = str(row['Arrival Time'])
+                arrival_time_part, day_offset = parse_arrival_info(arrival_time_str_raw)
+
+                # 2. Parse the time component from the string
+                try:
+                    arrival_time = datetime.strptime(arrival_time_part, '%H:%M').time()
+                except (ValueError, TypeError): # Added TypeError for safety if arrival_time_part is None
+                    arrival_time = datetime.strptime(arrival_time_part, '%H:%M:%S').time()
+
+                # 3. Calculate the arrival date by adding the day offset to the departure date
+                arrival_date = flight_date + timedelta(days=day_offset)
+                # 4. Construct the final arrival datetime object
+                arrival_datetime = datetime.combine(arrival_date, arrival_time)
                 transfer_info = str(row['Transfer Info'])
                 if "转" in transfer_info:
                     match = re.search(r'(\d+)', transfer_info)

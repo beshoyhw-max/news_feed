@@ -23,7 +23,7 @@ def find_best_travel_plan(
     max_layover_hours: int = 48,
     no_fly_start_hour: Optional[int] = None,
     no_fly_end_hour: Optional[int] = None,
-    top_n: int = 3,  # Parameter to control how many best plans to find
+    top_n: int = 5,  # Parameter to control how many best plans to find
 ) -> List[TravelPlan]:
     """
     Finds the top_n best travel plans with distinctly different country paths.
