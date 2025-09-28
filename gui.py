@@ -1,6 +1,6 @@
 import flet as ft
 import threading
-from datetime import timedelta
+from datetime import timedelta, datetime
 from main import find_best_travel_plan
 from data_handler import load_flights
 from models import CITIES_BY_CODE, get_city_by_code, TravelPlan
@@ -35,6 +35,35 @@ def main(page: ft.Page):
     start_city_dd = ft.Dropdown(label="出发城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
     end_city_dd = ft.Dropdown(label="目的城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
     num_countries_tf = ft.TextField(label="访问国家数量", value="3", width=150, disabled=True)
+
+    # Travel Dates
+    start_date_tf = ft.TextField(label="开始日期", value="2025-09-29", width=120, disabled=True)
+    end_date_tf = ft.TextField(label="结束日期", value="2025-10-03", width=120, disabled=True)
+    start_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: start_date_picker.pick_date(), disabled=True)
+    end_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: end_date_picker.pick_date(), disabled=True)
+
+    def on_start_date_change(e):
+        start_date_tf.value = e.control.value.strftime("%Y-%m-%d")
+        page.update()
+
+    def on_end_date_change(e):
+        end_date_tf.value = e.control.value.strftime("%Y-%m-%d")
+        page.update()
+
+    start_date_picker = ft.DatePicker(
+        on_change=on_start_date_change,
+        first_date=datetime(2024, 1, 1),
+        last_date=datetime(2026, 12, 31),
+        current_date=datetime(2025, 9, 29),
+    )
+    end_date_picker = ft.DatePicker(
+        on_change=on_end_date_change,
+        first_date=datetime(2024, 1, 1),
+        last_date=datetime(2026, 12, 31),
+        current_date=datetime(2025, 10, 3),
+    )
+    page.overlay.extend([start_date_picker, end_date_picker])
+
 
     # Flight Preferences
     min_layover_tf = ft.TextField(label="最短停留 (小时)", value="10", width=150, disabled=True)
@@ -106,7 +135,22 @@ def main(page: ft.Page):
         page.update()
 
         try:
+            start_date = datetime.strptime(start_date_tf.value, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_date_tf.value, "%Y-%m-%d").date()
+
+            if start_date > end_date:
+                page.banner.content = ft.Text("Error: Start date cannot be after the end date.")
+                page.banner.bgcolor = ft.Colors.RED_100
+                page.banner.leading = ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED, size=40)
+                page.banner.open = True
+                find_button.disabled = False
+                results_view.controls.clear()
+                page.update()
+                return
+
             params = {
+                "start_date": start_date,
+                "end_date": end_date,
                 "start_city": city_name_to_code_map.get(start_city_dd.value) if start_city_dd.value != "Any" else None,
                 "end_city": city_name_to_code_map.get(end_city_dd.value) if end_city_dd.value != "Any" else None,
                 "num_countries": int(num_countries_tf.value),
@@ -143,7 +187,7 @@ def main(page: ft.Page):
         
     def run_search(params):
         nonlocal search_results
-        search_results = find_best_travel_plan(flights=all_flights, **params)
+        search_results = find_best_travel_plan(base_flights=all_flights, **params)
         display_results()
 
     def display_results():
@@ -237,6 +281,10 @@ def main(page: ft.Page):
                 ft.Text("Route Options", size=16, weight=ft.FontWeight.BOLD),
                 start_city_dd, end_city_dd, num_countries_tf,
                 ft.Divider(height=20),
+                ft.Text("Travel Dates", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([start_date_tf, start_date_button]),
+                ft.Row([end_date_tf, end_date_button]),
+                ft.Divider(height=20),
                 ft.Text("Flight Preferences", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([min_layover_tf, max_layover_tf]),
                 ft.Text("舱位等级:"), flight_class_rg, direct_only_cb,
@@ -286,7 +334,12 @@ def main(page: ft.Page):
         print(f"Loaded {len(all_flights)} flights.")
         
         def enable_controls():
-            for ctrl in [start_city_dd, end_city_dd, num_countries_tf, min_layover_tf, max_layover_tf, flight_class_rg, direct_only_cb, no_fly_cb, find_button]:
+            for ctrl in [
+                start_city_dd, end_city_dd, num_countries_tf,
+                min_layover_tf, max_layover_tf, flight_class_rg,
+                direct_only_cb, no_fly_cb, find_button,
+                start_date_tf, end_date_tf, start_date_button, end_date_button
+            ]:
                 ctrl.disabled = False
             loading_overlay.visible = False
             page.update()

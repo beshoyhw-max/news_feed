@@ -1,7 +1,8 @@
 import pandas as pd
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List
+from collections import defaultdict
 
 from models import Flight
 
@@ -89,26 +90,12 @@ def load_flights(
 
                 departure_datetime = datetime.combine(flight_date, departure_time)
                 
-                arrival_time_parts = arrival_time_str.split(' ')
-                
-                try:
-                    arrival_time = datetime.strptime(arrival_time_parts[0], '%H:%M').time()
-                except ValueError:
-                    arrival_time = datetime.strptime(arrival_time_parts[0], '%H:%M:%S').time()
-
-                days_offset = 0
-                if len(arrival_time_parts) > 1:
-                    if '+1' in arrival_time_parts[1]:
-                        days_offset = 1
-                    elif '+2' in arrival_time_parts[1]:
-                        days_offset = 2
-                    elif '+3' in arrival_time_parts[1]:
-                        days_offset = 3
-                    
-                arrival_datetime = datetime.combine(flight_date + timedelta(days=days_offset), arrival_time)
-
-                # Duration and Transfer parsing
+                # Duration is parsed from the 'Total Time' column (source of truth)
                 duration = parse_duration(row['Total Time'])
+                
+                # Arrival datetime is now correctly calculated from the departure time and true duration
+                arrival_datetime = departure_datetime + duration
+                arrival_time = arrival_datetime.time()
                 
                 transfer_info = str(row['Transfer Info'])
                 if "转" in transfer_info:
@@ -150,6 +137,55 @@ def load_flights(
 
     return flights
 
+def expand_flights_for_date_range(
+    base_flights: List[Flight], 
+    start_date: date, 
+    end_date: date
+) -> List[Flight]:
+    """
+    Expands a list of base flights to cover a given date range.
+    It assumes the base flights represent a typical week's schedule.
+    """
+    flights_by_weekday = defaultdict(list)
+    for flight in base_flights:
+        flights_by_weekday[flight.date.weekday()].append(flight)
+
+    expanded_flights = []
+    current_date = start_date
+    while current_date <= end_date:
+        weekday = current_date.weekday()
+        if weekday in flights_by_weekday:
+            for base_flight in flights_by_weekday[weekday]:
+                # Calculate the difference in days from the base flight's date
+                # This is important for multi-day flights
+                arrival_date_offset = (base_flight.arrival_datetime.date() - base_flight.departure_datetime.date()).days
+                
+                new_departure_datetime = datetime.combine(current_date, base_flight.departure_time)
+                new_arrival_datetime = datetime.combine(current_date + timedelta(days=arrival_date_offset), base_flight.arrival_time)
+
+                new_flight = Flight(
+                    date=current_date,
+                    airline=base_flight.airline,
+                    flight_number=base_flight.flight_number,
+                    flight_class=base_flight.flight_class,
+                    departure_city_code=base_flight.departure_city_code,
+                    arrival_city_code=base_flight.arrival_city_code,
+                    departure_time=base_flight.departure_time,
+                    arrival_time=base_flight.arrival_time,
+                    departure_datetime=new_departure_datetime,
+                    arrival_datetime=new_arrival_datetime,
+                    duration=base_flight.duration,
+                    transfers=base_flight.transfers,
+                    transfer_info=base_flight.transfer_info,
+                    direct_flight=base_flight.direct_flight
+                )
+                expanded_flights.append(new_flight)
+        current_date += timedelta(days=1)
+    
+    print(f"Expanded {len(base_flights)} base flights to {len(expanded_flights)} flights from {start_date} to {end_date}.")
+    return expanded_flights
+
+
 if __name__ == '__main__':
     # Example usage
     flights_data = load_flights("merged_flight_data.xlsx")
@@ -158,3 +194,12 @@ if __name__ == '__main__':
         print("First 2 flights:")
         for f in flights_data[:2]:
             print(f"  {f.departure_city_code} -> {f.arrival_city_code} on {f.airline} ({f.flight_number}) class: {f.flight_class}")
+        
+        print("\n--- Testing Flight Expansion ---")
+        test_start_date = date(2025, 10, 6) # A Monday
+        test_end_date = date(2025, 10, 12) # A Sunday
+        expanded = expand_flights_for_date_range(flights_data, test_start_date, test_end_date)
+        if expanded:
+            print(f"First 2 expanded flights:")
+            for f in expanded[:2]:
+                 print(f"  {f.departure_city_code} -> {f.arrival_city_code} on {f.airline} ({f.flight_number}) date: {f.date}")

@@ -1,16 +1,18 @@
 import heapq
 from typing import List, Optional, Dict, Tuple, Set
 from collections import defaultdict
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 import itertools
 
 # Assuming these are defined in your project structure
-from data_handler import load_flights
+from data_handler import load_flights, expand_flights_for_date_range
 from models import TravelPlan, Flight, get_city_by_code, CITIES_BY_CODE
 
 
 def find_best_travel_plan(
-    flights: List[Flight],
+    base_flights: List[Flight],
+    start_date: date,
+    end_date: date,
     cities_choice: List[str],
     num_countries: int,
     start_city: Optional[str] = None,
@@ -28,13 +30,17 @@ def find_best_travel_plan(
     """
     verbose_logging = False
 
-    if not flights or not cities_choice:
+    if not base_flights or not cities_choice:
+        return []
+
+    search_flights = expand_flights_for_date_range(base_flights, start_date, end_date)
+    if not search_flights:
         return []
 
     # --- Pre-filtering Stage ---
     print("Pre-filtering flights based on user criteria...")
     pre_filtered_flights = []
-    for flight in flights:
+    for flight in search_flights:
         if flight_class_filter != "ALL" and flight_class_filter not in flight.flight_class: continue
         if direct_flights_only and flight.transfers > 0: continue
         if (flight.departure_city_code not in cities_choice) or (flight.arrival_city_code not in cities_choice): continue
@@ -70,10 +76,10 @@ def find_best_travel_plan(
     target_country_count = num_countries + 1 if start_city else num_countries
     
     for city_code in initial_cities:
-        visited_countries = set()
-        if start_city:
-            start_country = get_city_by_code(city_code).country
-            visited_countries = {start_country}
+        # Always initialize the visited_countries with the starting country.
+        # This is crucial for the revisit logic to work correctly from the first flight.
+        start_country = get_city_by_code(city_code).country
+        visited_countries = {start_country}
         
         countries_needed = target_country_count - len(visited_countries)
         heuristic_cost = max(0, countries_needed) * min_flight_duration
@@ -104,6 +110,16 @@ def find_best_travel_plan(
         if len(visited_countries) == target_country_count:
             if not end_city or (end_city and current_city_code == end_city):
                 new_plan = TravelPlan(flights=path)
+
+                # --- Final Filter for Unwanted Round Trips ---
+                # A plan is an unwanted round trip if it starts and ends in the same country,
+                # UNLESS the user explicitly requested it by setting start and end cities to the same value.
+                is_explicit_round_trip = start_city is not None and start_city == end_city
+                if not is_explicit_round_trip:
+                    origin_country = get_city_by_code(new_plan.flights[0].departure_city_code).country
+                    destination_country = get_city_by_code(new_plan.flights[-1].arrival_city_code).country
+                    if origin_country == destination_country:
+                        continue # Discard the plan
                 
                 # --- NEW DIVERSITY LOGIC ---
                 # Create a signature for the path based on the sequence of countries
@@ -185,15 +201,21 @@ if __name__ == '__main__':
         print("Could not load flight data. Exiting."); exit()
     print(f"Loaded {len(all_flights)} flights.")
 
+    # Define a date range for the test
+    test_start_date = date(2025, 9, 29)
+    test_end_date = date(2025, 10, 5)
+
     best_plans = find_best_travel_plan(
-        flights=all_flights,
-        start_city="CAI",
+        base_flights=all_flights,
+        start_date=test_start_date,
+        end_date=test_end_date,
+        start_city="ALG",
         cities_choice=[c.code for c in CITIES_BY_CODE.values()],
         num_countries=4,
         min_layover_hours=10,
         max_layover_hours=72
     )
-    
+
     if best_plans:
         for i, plan in enumerate(best_plans):
             print(f"\n--- Plan {i+1} ---")
