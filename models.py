@@ -7,7 +7,7 @@ CITIES: List[Dict[str, str]] = [
     {'name': 'Algiers', 'name_cn': '阿尔及尔', 'code': 'ALG', 'country': 'Algeria', 'country_cn': '阿尔及利亚'},
     {'name': 'Malabo', 'name_cn': '马拉博', 'code': 'SSG', 'country': 'Equatorial Guinea', 'country_cn': '赤道几内亚'},
     {'name': 'Cotonou', 'name_cn': '科托努', 'code': 'COO', 'country': 'Benin', 'country_cn': '贝宁'},
-    {'name': 'Tunis', 'name_cn': '突尼斯', 'code': 'TUN', 'country': 'Tunisia', 'country_cn': '突尼斯'},
+    {'name': 'Tunis', 'name_cn': '突尼斯市', 'code': 'TUN', 'country': 'Tunisia', 'country_cn': '突尼斯'},
     {'name': 'Abidjan', 'name_cn': '阿比让', 'code': 'ABJ', 'country': 'Cote dIvoire', 'country_cn': '科特迪瓦'},
     {'name': 'Nouakchott', 'name_cn': '努瓦克肖特', 'code': 'NKC', 'country': 'Mauritania', 'country_cn': '毛里塔尼亚'},
     {'name': 'Casablanca', 'name_cn': '卡萨布兰卡', 'code': 'CMN', 'country': 'Morocco', 'country_cn': '摩洛哥'},
@@ -24,14 +24,16 @@ CITIES: List[Dict[str, str]] = [
     {'name': 'Libreville', 'name_cn': '利伯维尔', 'code': 'LBV', 'country': 'Gabon', 'country_cn': '加蓬'},
     {'name': 'Benghazi', 'name_cn': '班加西', 'code': 'BEN', 'country': 'Libya', 'country_cn': '利比亚'},
     {'name': 'Tripoli', 'name_cn': '的黎波里', 'code': 'TIP', 'country': 'Libya', 'country_cn': '利比亚'},
-    {'name': 'Monrovia', 'name_cn': '蒙罗维亚', 'code': 'ROB', 'country': 'Liberia', 'country_cn': '利比里亚'},
-    {'name': 'Kinshasa', 'name_cn': '金沙萨', 'code': 'FIH', 'country': 'DR Congo', 'country_cn': '刚果（金）'},
-    {'name': 'Brazzaville', 'name_cn': '布拉柴维尔', 'code': 'BZV', 'country': 'Congo-Brazzaville', 'country_cn': '刚果（布）'},
+    {'name': 'Kinshasa', 'name_cn': '金沙萨', 'code': 'FIH', 'country': 'DR Congo', 'country_cn': '刚果(金)'},
+    {'name': 'Brazzaville', 'name_cn': '布拉柴维尔', 'code': 'BZV', 'country': 'Congo-Brazzaville', 'country_cn': '刚果(布)'},
     {'name': 'Conakry', 'name_cn': '科纳克里', 'code': 'CKY', 'country': 'Guinea', 'country_cn': '几内亚'},
     {'name': 'Banjul', 'name_cn': '班珠尔', 'code': 'BJL', 'country': 'Gambia', 'country_cn': '冈比亚'},
     {'name': 'Praia', 'name_cn': '普拉亚', 'code': 'RAI', 'country': 'Cape Verde', 'country_cn': '佛得角'},
     {'name': 'NDjamena', 'name_cn': '恩贾梅纳', 'code': 'NDJ', 'country': 'Chad', 'country_cn': '乍得'},
-    {'name': 'Bangui', 'name_cn': '班吉', 'code': 'BGF', 'country': 'Central African Republic', 'country_cn': '中非共和国'}
+    {'name': 'Bangui', 'name_cn': '班吉', 'code': 'BGF', 'country': 'Central African Republic', 'country_cn': '中非'},
+    {'name': 'Asmara', 'name_cn': '阿斯马拉', 'code': 'ASM', 'country': 'Eritrea', 'country_cn': '厄立特里亚'},
+    {'name': 'Bissau', 'name_cn': '比绍', 'code': 'OXB', 'country': 'Guinea Bissau', 'country_cn': '几内亚比绍'},
+    {'name': 'Lubumbashi', 'name_cn': '卢本巴希', 'code': 'FBM', 'country': 'DR Congo', 'country_cn': '刚果(金)'}
 ]
 
 @dataclass
@@ -57,6 +59,7 @@ class Flight:
     duration: timedelta
     transfers: int
     transfer_info: str
+    visa_info: str  # <-- ADD THIS LINE
     direct_flight: bool
 
 @dataclass

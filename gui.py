@@ -17,9 +17,7 @@ def format_delta(td: timedelta) -> str:
 
 # --- Main Application ---
 def main(page: ft.Page):
-    page.title = "Executive Travel Plan Finder"
-    page.window_width = 1600
-    page.window_height = 950
+    page.title = "旅行计划查找器"
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_GREY, font_family="Microsoft YaHei")
     page.bgcolor = ft.Colors.GREY_200
 
@@ -37,10 +35,10 @@ def main(page: ft.Page):
     num_countries_tf = ft.TextField(label="访问国家数量", value="3", width=150, disabled=True)
 
     # Travel Dates
-    start_date_tf = ft.TextField(label="开始日期", value="2025-09-29", width=120, disabled=True)
-    end_date_tf = ft.TextField(label="结束日期", value="2025-10-03", width=120, disabled=True)
-    start_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: start_date_picker.pick_date(), disabled=True)
-    end_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: end_date_picker.pick_date(), disabled=True)
+    start_date_tf = ft.TextField(label="出发日期", value="2025-09-29", width=120, disabled=True)
+    end_date_tf = ft.TextField(label="到达日期", value="2025-10-05", width=120, disabled=True)
+    start_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: page.open(start_date_picker), disabled=True)
+    end_date_button = ft.IconButton(icon=ft.Icons.CALENDAR_MONTH, on_click=lambda _: page.open(end_date_picker), disabled=True)
 
     def on_start_date_change(e):
         start_date_tf.value = e.control.value.strftime("%Y-%m-%d")
@@ -71,7 +69,7 @@ def main(page: ft.Page):
     flight_class_rg = ft.RadioGroup(content=ft.Row([
         ft.Radio(value="ALL", label="任何"),
         ft.Radio(value="Economy", label="经济舱"),
-        ft.Radio(value="Business", label="商务舱"),
+        ft.Radio(value="Business", label="公务舱"),
     ]), value="ALL", disabled=True)
     direct_only_cb = ft.Checkbox(label="仅限直飞航班", value=False, disabled=True)
 
@@ -83,13 +81,13 @@ def main(page: ft.Page):
         no_fly_start_tf.disabled = not is_enabled
         no_fly_end_tf.disabled = not is_enabled
         page.update()
-    no_fly_cb = ft.Checkbox(label="启用禁飞时段", on_change=toggle_time_filter, value=False, disabled=True)
+    no_fly_cb = ft.Checkbox(label="排除飞行时间段（红眼航班）", on_change=toggle_time_filter, value=False, disabled=True)
     
     # --- NEW: Forced Cities Checklist ---
     forced_cities_checklist = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, expand=True)
     forced_city_checkboxes = []
     for city in sorted_cities:
-        cb = ft.Checkbox(label=f"{city.name_cn} ({city.code})", disabled=True)
+        cb = ft.Checkbox(label=f"{city.country_cn} - {city.name_cn} ({city.code})", disabled=True)
         forced_city_checkboxes.append((cb, city.code))
         forced_cities_checklist.controls.append(cb)
 
@@ -97,7 +95,7 @@ def main(page: ft.Page):
         for cb, _ in forced_city_checkboxes:
             cb.value = e.control.value
         page.update()
-    select_all_forced_cities_cb = ft.Checkbox(label="Select All / Deselect All", on_change=toggle_all_forced_cities, disabled=True)
+    select_all_forced_cities_cb = ft.Checkbox(label="全选 / 取消全选", on_change=toggle_all_forced_cities, disabled=True)
 
 
     # Search Scope Cities Checklist
@@ -112,10 +110,10 @@ def main(page: ft.Page):
         for cb, _ in city_checkboxes:
             cb.value = e.control.value
         page.update()
-    select_all_cities_cb = ft.Checkbox(label="Select All / Deselect All", on_change=toggle_all_cities)
+    select_all_cities_cb = ft.Checkbox(label="全选 / 取消全选", on_change=toggle_all_cities)
 
     # Action Button
-    find_button = ft.ElevatedButton(text="Find Optimal Plans", icon=ft.Icons.TRAVEL_EXPLORE, height=50, disabled=True)
+    find_button = ft.ElevatedButton(text="寻找最佳方案", icon=ft.Icons.TRAVEL_EXPLORE, height=50, disabled=True)
     
     # Results Display
     results_view = ft.Column(
@@ -125,80 +123,91 @@ def main(page: ft.Page):
         expand=True
     )
     
-    # --- Banner for Errors/Warnings ---
-    def close_banner(e):
-        page.banner.open = False
-        page.update()
+    # --- Dialog for Errors/Warnings using Cupertino style ---
+    def show_alert(title, message, icon, icon_color):
+        def close_dialog(e):
+            page.close(cupertino_alert_dialog)
+            page.update()
 
-    page.banner = ft.Banner(
-        bgcolor=ft.Colors.AMBER_100,
-        leading=ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER, size=40),
-        content=ft.Text(""), # Content will be set dynamically
-        actions=[
-            ft.TextButton("OK", on_click=close_banner),
-        ]
-    )
-    
+        cupertino_alert_dialog = ft.CupertinoAlertDialog(
+            title=ft.Row([ft.Icon(icon, color=icon_color), ft.Text(title)]),
+            content=ft.Text(message),
+            actions=[
+                ft.CupertinoDialogAction("OK", on_click=close_dialog),
+            ],
+        )
+        page.open(cupertino_alert_dialog)
+
     # --- Event Handlers ---
     def find_plan_click(e):
-        find_button.disabled = True
-        results_view.controls.clear()
-        results_view.alignment = ft.MainAxisAlignment.CENTER
-        results_view.horizontal_alignment = ft.CrossAxisAlignment.CENTER
-        results_view.controls.append(ft.ProgressRing())
-        results_view.controls.append(ft.Text("Calculating optimal routes...", size=16))
-        page.update()
-
+        # --- 1. Input Validation First ---
         try:
             start_date = datetime.strptime(start_date_tf.value, "%Y-%m-%d").date()
             end_date = datetime.strptime(end_date_tf.value, "%Y-%m-%d").date()
-
-            if start_date > end_date:
-                page.banner.content = ft.Text("Error: Start date cannot be after the end date.")
-                page.banner.bgcolor = ft.Colors.RED_100
-                page.banner.leading = ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED, size=40)
-                page.banner.open = True
-                find_button.disabled = False
-                results_view.controls.clear()
-                page.update()
-                return
-            
+            num_countries = int(num_countries_tf.value)
+            min_layover = int(min_layover_tf.value)
+            max_layover = int(max_layover_tf.value)
+            no_fly_start = int(no_fly_start_tf.value) if no_fly_cb.value else None
+            no_fly_end = int(no_fly_end_tf.value) if no_fly_cb.value else None
+            cities_choice = [code for cb, code in city_checkboxes if cb.value]
             forced_city_codes = [code for cb, code in forced_city_checkboxes if cb.value]
 
-            params = {
-                "start_date": start_date,
-                "end_date": end_date,
-                "start_city": city_name_to_code_map.get(start_city_dd.value) if start_city_dd.value != "Any" else None,
-                "end_city": city_name_to_code_map.get(end_city_dd.value) if end_city_dd.value != "Any" else None,
-                "num_countries": int(num_countries_tf.value),
-                "min_layover_hours": int(min_layover_tf.value),
-                "max_layover_hours": int(max_layover_tf.value),
-                "no_fly_start_hour": int(no_fly_start_tf.value) if no_fly_cb.value else None,
-                "no_fly_end_hour": int(no_fly_end_tf.value) if no_fly_cb.value else None,
-                "cities_choice": [code for cb, code in city_checkboxes if cb.value],
-                "flight_class_filter": flight_class_rg.value,
-                "direct_flights_only": direct_only_cb.value,
-                "forced_cities": forced_city_codes
-            }
         except ValueError:
-            page.banner.content = ft.Text("Error: Please enter valid numbers for all numeric fields.")
-            page.banner.bgcolor = ft.Colors.RED_100
-            page.banner.leading = ft.Icon(ft.Icons.ERROR_OUTLINE, color=ft.Colors.RED, size=40)
-            page.banner.open = True
-            find_button.disabled = False
-            results_view.controls.clear()
-            page.update()
+            show_alert("输入错误", "请为所有数字字段输入有效的数字。", ft.Icons.ERROR_OUTLINE, ft.Colors.RED)
+            return
+
+        if start_date > end_date:
+            show_alert("无效的日期范围", "开始日期不能晚于结束日期。", ft.Icons.ERROR_OUTLINE, ft.Colors.RED)
             return
         
-        if not params["cities_choice"]:
-            page.banner.content = ft.Text("Warning: Please select at least one city in the search scope.")
-            page.banner.bgcolor = ft.Colors.AMBER_100
-            page.banner.leading = ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER, size=40)
-            page.banner.open = True
-            find_button.disabled = False
-            results_view.controls.clear()
-            page.update()
+        if not cities_choice:
+            show_alert("无效信息", "请在旅行范围内至少选择一个城市。", ft.Icons.WARNING_AMBER_ROUNDED, ft.Colors.AMBER)
             return
+
+        if start_city_dd.value == "Any" and end_city_dd.value == "Any" and num_countries == 1:
+            show_alert(
+                "无效条件",
+                "一段没有明确起点和终点的旅行必定会跨越多个国家。",
+                ft.Icons.ERROR_OUTLINE,
+                ft.Colors.RED
+            )
+            return
+
+        # --- 2. If Validation Passes, Update UI to Loading State ---
+        find_button.disabled = True
+        results_view.controls.clear()
+        results_view.controls.append(
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.ProgressRing(),
+                        ft.Text("寻找最佳方案...", size=16)
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=20
+                ),
+                alignment=ft.alignment.center,
+                expand=True
+            )
+        )
+        page.update()
+
+        # --- 3. Run Search in Background ---
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "start_city": city_name_to_code_map.get(start_city_dd.value) if start_city_dd.value != "Any" else None,
+            "end_city": city_name_to_code_map.get(end_city_dd.value) if end_city_dd.value != "Any" else None,
+            "num_countries": num_countries,
+            "min_layover_hours": min_layover,
+            "max_layover_hours": max_layover,
+            "no_fly_start_hour": no_fly_start,
+            "no_fly_end_hour": no_fly_end,
+            "cities_choice": cities_choice,
+            "flight_class_filter": flight_class_rg.value,
+            "direct_flights_only": direct_only_cb.value,
+            "forced_cities": forced_city_codes
+        }
 
         thread = threading.Thread(target=run_search, args=(params,), daemon=True)
         thread.start()
@@ -215,13 +224,13 @@ def main(page: ft.Page):
 
         if not search_results:
             centered_message = ft.Container(
-                ft.Text("No travel plans found matching the specified criteria.", size=18, italic=True),
+                ft.Text("未找到符合指定条件的旅行计划。", size=18, italic=True),
                 alignment=ft.alignment.center,
                 expand=True
             )
             results_view.controls.append(centered_message)
         else:
-            summary = ft.Text(f"Found {len(search_results)} optimal and diverse travel plans.", size=18, weight=ft.FontWeight.BOLD)
+            summary = ft.Text(f"找到了{len(search_results)}个最优的旅行方案", size=18, weight=ft.FontWeight.BOLD)
             results_view.controls.append(summary)
             
             for i, plan in enumerate(search_results):
@@ -235,23 +244,40 @@ def main(page: ft.Page):
         for i, flight in enumerate(plan.flights):
             dep_city = get_city_by_code(flight.departure_city_code)
             arr_city = get_city_by_code(flight.arrival_city_code)
-            
             flight_legs.append(
                 ft.Row(
                     [
                         ft.Text(f"{i+1}.", weight=ft.FontWeight.BOLD, width=30),
                         ft.Column(
                             [
-                                ft.Text(f"{dep_city.name_cn} ({dep_city.code}) to {arr_city.name_cn} ({arr_city.code})", weight=ft.FontWeight.BOLD),
-                                ft.Text(f"{flight.airline} {flight.flight_number} • {flight.flight_class} • {flight.transfer_info} • Flight Time: {format_delta(flight.duration)}", color=ft.Colors.GREY_600, size=12)
-                            ],
+                                                                # ft.Text(f"{dep_city.country_cn} ({dep_city.name_cn} {dep_city.code}) 🡺 {arr_city.country_cn} ({arr_city.name_cn} {arr_city.code})", weight=ft.FontWeight.BOLD),
+
+                                ft.Text(f"{dep_city.country_cn} ({dep_city.name_cn}) 🡺 {arr_city.country_cn} ({arr_city.name_cn})", weight=ft.FontWeight.BOLD),
+                                ft.Text(
+                                    (
+                                        f"{flight.airline} {flight.flight_number} • {flight.flight_class} "
+
+                                    ),
+                                    color=ft.Colors.GREY_600,
+                                    size=12
+                                ) ,
+                                                                ft.Text(
+                                    (
+
+                                        f"{'直飞' if 'N/A:' in flight.transfer_info else flight.transfer_info}"
+                                        f"{f' • 签证信息: {flight.visa_info}' if flight.visa_info != 'N/A' else ''}"
+                                        f" • 飞行时间：{format_delta(flight.duration)}"
+                                    ),
+                                    color=ft.Colors.GREY_600,
+                                    size=12
+                                )                             ],
                             spacing=2,
                             expand=True,
                         ),
                         ft.Column(
                             [
-                                ft.Text(f"Depart: {flight.departure_datetime.strftime('%Y-%m-%d %H:%M')}"),
-                                ft.Text(f"Arrive:  {flight.arrival_datetime.strftime('%Y-%m-%d %H:%M')}")
+                                ft.Text(f"出发: {flight.departure_datetime.strftime('%Y-%m-%d %H:%M')}"),
+                                ft.Text(f"到达: {flight.arrival_datetime.strftime('%Y-%m-%d %H:%M')}")
                             ],
                             spacing=2,
                             horizontal_alignment=ft.CrossAxisAlignment.END
@@ -268,8 +294,8 @@ def main(page: ft.Page):
                 ft.Column([
                     ft.Container(
                         ft.Row([
-                            ft.Text(f"Option {plan_num}", size=20, weight=ft.FontWeight.BOLD),
-                            ft.Text(f"Total Flight Time: {format_delta(plan.total_duration)}", size=16),
+                            ft.Text(f"方案 {plan_num}", size=20, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"总飞行时间: {format_delta(plan.total_duration)}", size=16),
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         bgcolor=ft.Colors.BLUE_GREY_50,
                         padding=15,
@@ -295,30 +321,25 @@ def main(page: ft.Page):
     controls_panel = ft.Container(
         ft.Column(
             [
-                ft.Text("Itinerary Criteria", size=22, weight=ft.FontWeight.BOLD),
-                ft.Text("Route Options", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(" ", size=5, weight=ft.FontWeight.BOLD),
                 start_city_dd, end_city_dd, num_countries_tf,
                 ft.Divider(height=20),
-                ft.Text("Travel Dates", size=16, weight=ft.FontWeight.BOLD),
-                ft.Row([start_date_tf, start_date_button]),
-                ft.Row([end_date_tf, end_date_button]),
+                ft.Row([start_date_tf, start_date_button , end_date_tf, end_date_button]),
                 ft.Divider(height=20),
-                ft.Text("Flight Preferences", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("航班筛选", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([min_layover_tf, max_layover_tf]),
                 ft.Text("舱位等级:"), flight_class_rg, direct_only_cb,
-                ft.Divider(height=20),
-                ft.Text("Time Filter", size=16, weight=ft.FontWeight.BOLD),
                 no_fly_cb, ft.Row([no_fly_start_tf, no_fly_end_tf]),
+                ft.Divider(height=20),               
+                ft.Text("旅行范围", size=16, weight=ft.FontWeight.BOLD),
+                select_all_cities_cb,
+                ft.Container(content=cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=250),
                 ft.Divider(height=20),
-                ft.Text("Forced Cities (Optional)", size=16, weight=ft.FontWeight.BOLD),
-                select_all_forced_cities_cb,
+                ft.Text("包含国家（可选)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Container(content=forced_cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=150),
                 ft.Divider(height=20),
                 find_button,
-                ft.Divider(height=20),
-                ft.Text("Search Scope", size=16, weight=ft.FontWeight.BOLD),
-                select_all_cities_cb,
-                cities_checklist
+                ft.Text(" ", size=5),
             ],
             scroll=ft.ScrollMode.ADAPTIVE
         ),
@@ -330,7 +351,7 @@ def main(page: ft.Page):
     
     results_panel = ft.Container(
         ft.Column([
-            ft.Text("Executive Itinerary Proposal", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("行程建议", size=28, weight=ft.FontWeight.BOLD),
             ft.Divider(height=20),
             results_view,
         ]),
@@ -338,14 +359,12 @@ def main(page: ft.Page):
         expand=True
     )
 
-    page.add(
-        ft.Row(
-            [
-                ft.Column([controls_panel], width=500),
-                ft.Column([results_panel], expand=True),
-            ],
-            expand=True
-        )
+    main_layout = ft.Row(
+        [
+            ft.Column([controls_panel], width=500),
+            ft.Column([results_panel], expand=True),
+        ],
+        expand=True
     )
 
     # --- Initial Data Loading in Background ---
@@ -356,6 +375,11 @@ def main(page: ft.Page):
         print(f"Loaded {len(all_flights)} flights.")
         
         def enable_controls():
+            # Clear the loading indicator and add the main layout
+            page.controls.clear()
+            page.add(main_layout)
+            
+            # Enable all the interactive controls
             for ctrl in [
                 start_city_dd, end_city_dd, num_countries_tf,
                 min_layover_tf, max_layover_tf, flight_class_rg,
@@ -367,20 +391,25 @@ def main(page: ft.Page):
             
             for cb, _ in forced_city_checkboxes:
                 cb.disabled = False
-            
-            loading_overlay.visible = False
+
             page.update()
         
         enable_controls()
 
-    loading_overlay = ft.Container(
-        ft.Column([ft.ProgressRing(), ft.Text("Loading Flight Data...", size=18)]),
+    loading_indicator = ft.Container(
+        content=ft.Column(
+            [
+                ft.ProgressRing(),
+                ft.Text("加载航班数据中...", size=18)
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=20
+        ),
         alignment=ft.alignment.center,
-        expand=True,
-        bgcolor="rgba(255, 255, 255, 0.8)"
+        expand=True
     )
     
-    page.overlay.append(loading_overlay)
+    page.add(loading_indicator)
     page.update()
 
     load_thread = threading.Thread(target=load_initial_data, daemon=True)

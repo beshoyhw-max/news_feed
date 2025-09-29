@@ -124,10 +124,19 @@ def load_flights(
                 else:
                     transfers = 0
                 
-                flight_number = ''.join(re.findall(r'[A-Z0-9]', str(row['Plane'])))
+                flight_number = str(row['Plane'])
 
                 # Handle flight class; get the value from the correct 'Flight Class' column.
                 flight_class = str(row.get('Flight Class', 'Economy')).strip()
+\
+                # Get Visa Info, provide a default value if missing
+                # --- MODIFIED LOGIC FOR VISA INFO ---
+                raw_visa_info = row.get('Visa Info')
+                # pd.isna is a robust way to check for blank/empty values in pandas
+                if pd.isna(raw_visa_info):
+                    visa_info = 'N/A'
+                else:
+                    visa_info = str(raw_visa_info).strip()
 
                 # Create Flight object
                 flight = Flight(
@@ -144,6 +153,7 @@ def load_flights(
                     duration=duration,
                     transfers=transfers,
                     transfer_info=transfer_info,
+                    visa_info=visa_info, # <-- ADD THIS LINE
                     direct_flight=(transfers == 0)
                 )
                 flights.append(flight)
@@ -197,6 +207,7 @@ def expand_flights_for_date_range(
                     duration=base_flight.duration,
                     transfers=base_flight.transfers,
                     transfer_info=base_flight.transfer_info,
+                    visa_info=base_flight.visa_info, # <-- ADD THIS LINE
                     direct_flight=base_flight.direct_flight
                 )
                 expanded_flights.append(new_flight)
