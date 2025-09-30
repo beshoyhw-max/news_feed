@@ -114,8 +114,15 @@ def load_flights(
                 duration = parse_duration(row['Total Time'])
                 
                 # Arrival datetime is now correctly calculated from the departure time and true duration
-                arrival_datetime = departure_datetime + duration
-                arrival_time = arrival_datetime.time()
+                arrival_time_str, days_offset = parse_arrival_info(arrival_time_str)
+                try:
+                    arrival_time = datetime.strptime(arrival_time_str, '%H:%M').time()
+                except (ValueError, AttributeError):
+                    arrival_time = datetime.strptime(arrival_time_str, '%H:%M:%S').time()
+                
+                # Calculate arrival datetime with day offset
+                arrival_datetime = datetime.combine(flight_date + timedelta(days=days_offset), arrival_time)
+                
                 
                 transfer_info = str(row['Transfer Info'])
                 if "转" in transfer_info:

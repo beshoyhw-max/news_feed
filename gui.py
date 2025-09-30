@@ -1,3 +1,4 @@
+# Forcing a reload to fix stale cache issue.
 import flet as ft
 import threading
 from datetime import timedelta, datetime
@@ -24,14 +25,47 @@ def main(page: ft.Page):
     # --- Application State ---
     all_flights = []
     search_results = []
+    stop_event = threading.Event()
     city_name_to_code_map = {f"{city.country_cn} - {city.name_cn}": city.code for city in CITIES_BY_CODE.values()}
     sorted_cities = sorted(CITIES_BY_CODE.values(), key=lambda c: (c.country_cn, c.name_cn))
     city_display_names = [ft.dropdown.Option(text) for text in [f"{city.country_cn} - {city.name_cn}" for city in sorted_cities]]
+    
+    # Define and populate the checkbox data structure *before* it's needed by the event handler.
+    city_checkboxes = []
+    for city in sorted_cities:
+        cb = ft.Checkbox(label=f"{city.country_cn} - {city.name_cn} ({city.code})")
+        city_checkboxes.append((cb, city.code))
+
+    def update_search_scope_on_city_select(e):
+        print("--- Running Auto-Select Event Handler ---")
+        selected_city_name = e.control.value
+        print(f"1. Dropdown value changed to: '{selected_city_name}'")
+        if selected_city_name == "Any":
+            print("-> Value is 'Any', exiting.")
+            return
+        
+        city_code = city_name_to_code_map.get(selected_city_name)
+        if not city_code:
+            print(f"-> ERROR: Could not find city code for '{selected_city_name}'. Exiting.")
+            return
+        print(f"2. Found target city code: {city_code}")
+            
+        # NEW LOGIC: Loop through the checkboxes and find the one that matches the selected city code.
+        for cb, city_code_in_list in city_checkboxes:
+            if city_code_in_list == city_code:
+                print(f"   -> Checking box for the selected city ({city_code})")
+                cb.value = True
+                # We found our city, no need to check the rest.
+                break
+        
+        print("3. Updating page...")
+        page.update()
+        print("--- Auto-Select Handler Finished ---")
 
     # --- UI Controls ---
     # Route Options
-    start_city_dd = ft.Dropdown(label="出发城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
-    end_city_dd = ft.Dropdown(label="目的城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", disabled=True)
+    start_city_dd = ft.Dropdown(label="出发城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", on_change=update_search_scope_on_city_select, disabled=True)
+    end_city_dd = ft.Dropdown(label="目的城市", options=[ft.dropdown.Option("Any")] + city_display_names, value="Any", on_change=update_search_scope_on_city_select, disabled=True)
     num_countries_tf = ft.TextField(label="访问国家数量", value="3", width=150, disabled=True)
 
     # Travel Dates
@@ -47,6 +81,7 @@ def main(page: ft.Page):
     def on_end_date_change(e):
         end_date_tf.value = e.control.value.strftime("%Y-%m-%d")
         page.update()
+
 
     start_date_picker = ft.DatePicker(
         on_change=on_start_date_change,
@@ -66,12 +101,25 @@ def main(page: ft.Page):
     # Flight Preferences
     min_layover_tf = ft.TextField(label="最短停留 (小时)", value="10", width=150, disabled=True)
     max_layover_tf = ft.TextField(label="最长停留 (小时)", value="48", width=150, disabled=True)
+    max_flight_duration_tf = ft.TextField(label="最长单次飞行 (小时)", value="10", width=180, disabled=True)
     flight_class_rg = ft.RadioGroup(content=ft.Row([
         ft.Radio(value="ALL", label="任何"),
         ft.Radio(value="Economy", label="经济舱"),
-        ft.Radio(value="Business", label="公务舱"),
+        ft.Radio(value="Business", label="公务舱")
     ]), value="ALL", disabled=True)
-    direct_only_cb = ft.Checkbox(label="仅限直飞航班", value=False, disabled=True)
+    
+    max_transfers_tf = ft.TextField(label="最多中转次数", value="1", width=150, disabled=True)
+    def toggle_direct_flights(e):
+        is_direct = e.control.value
+        max_transfers_tf.disabled = is_direct
+        if is_direct:
+            max_transfers_tf.value = "0"
+        page.update()
+
+    direct_only_cb = ft.Checkbox(
+        label="仅限直飞航班", value=False, on_change=toggle_direct_flights, disabled=True
+    )
+
 
     # Time Filter
     no_fly_start_tf = ft.TextField(label="从", value="23", width=70, disabled=True)
@@ -99,12 +147,11 @@ def main(page: ft.Page):
 
 
     # Search Scope Cities Checklist
-    cities_checklist = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, expand=True)
-    city_checkboxes = []
-    for city in sorted_cities:
-        cb = ft.Checkbox(label=f"{city.country_cn} - {city.name_cn} ({city.code})")
-        city_checkboxes.append((cb, city.code))
-        cities_checklist.controls.append(cb)
+    cities_checklist = ft.Column(
+        [cb for cb, _ in city_checkboxes], # Use the pre-populated checkboxes
+        scroll=ft.ScrollMode.ADAPTIVE, 
+        expand=True
+    )
     
     def toggle_all_cities(e):
         for cb, _ in city_checkboxes:
@@ -114,6 +161,17 @@ def main(page: ft.Page):
 
     # Action Button
     find_button = ft.ElevatedButton(text="寻找最佳方案", icon=ft.Icons.TRAVEL_EXPLORE, height=50, disabled=True)
+    def stop_search_click(e):
+        print("Stop button clicked!")
+        stop_event.set()
+        stop_button.disabled = True # Prevent multiple clicks
+        page.update()
+
+    stop_button = ft.ElevatedButton(
+        text="停止搜索", icon=ft.Icons.CANCEL, height=50,
+        visible=False, disabled=True, on_click=stop_search_click,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400, color=ft.Colors.WHITE)
+    )
     
     # Results Display
     results_view = ft.Column(
@@ -147,6 +205,8 @@ def main(page: ft.Page):
             num_countries = int(num_countries_tf.value)
             min_layover = int(min_layover_tf.value)
             max_layover = int(max_layover_tf.value)
+            max_flight_duration = int(max_flight_duration_tf.value)
+            max_transfers = int(max_transfers_tf.value)
             no_fly_start = int(no_fly_start_tf.value) if no_fly_cb.value else None
             no_fly_end = int(no_fly_end_tf.value) if no_fly_cb.value else None
             cities_choice = [code for cb, code in city_checkboxes if cb.value]
@@ -174,7 +234,10 @@ def main(page: ft.Page):
             return
 
         # --- 2. If Validation Passes, Update UI to Loading State ---
+        stop_event.clear() # Reset for the new search
         find_button.disabled = True
+        stop_button.visible = True
+        stop_button.disabled = False
         results_view.controls.clear()
         results_view.controls.append(
             ft.Container(
@@ -201,12 +264,14 @@ def main(page: ft.Page):
             "num_countries": num_countries,
             "min_layover_hours": min_layover,
             "max_layover_hours": max_layover,
+            "max_flight_duration_hours": max_flight_duration,
             "no_fly_start_hour": no_fly_start,
             "no_fly_end_hour": no_fly_end,
             "cities_choice": cities_choice,
             "flight_class_filter": flight_class_rg.value,
-            "direct_flights_only": direct_only_cb.value,
-            "forced_cities": forced_city_codes
+            "max_transfers": max_transfers,
+            "forced_cities": forced_city_codes,
+            "stop_event": stop_event
         }
 
         thread = threading.Thread(target=run_search, args=(params,), daemon=True)
@@ -230,13 +295,18 @@ def main(page: ft.Page):
             )
             results_view.controls.append(centered_message)
         else:
-            summary = ft.Text(f"找到了{len(search_results)}个最优的旅行方案", size=18, weight=ft.FontWeight.BOLD)
+            summary_text = f"找到了{len(search_results)}个最优的旅行方案"
+            if stop_event.is_set():
+                summary_text += " (搜索已由用户停止)"
+            summary = ft.Text(summary_text, size=18, weight=ft.FontWeight.BOLD)
             results_view.controls.append(summary)
             
             for i, plan in enumerate(search_results):
                 results_view.controls.append(create_plan_card(plan, i+1))
         
         find_button.disabled = False
+        stop_button.visible = False
+        stop_button.disabled = True
         page.update()
 
     def create_plan_card(plan, plan_num):
@@ -319,35 +389,47 @@ def main(page: ft.Page):
     
     # --- Layout ---
     controls_panel = ft.Container(
-        ft.Column(
-            [
-                ft.Text(" ", size=5, weight=ft.FontWeight.BOLD),
-                start_city_dd, end_city_dd, num_countries_tf,
-                ft.Divider(height=20),
-                ft.Row([start_date_tf, start_date_button , end_date_tf, end_date_button]),
-                ft.Divider(height=20),
-                ft.Text("航班筛选", size=16, weight=ft.FontWeight.BOLD),
-                ft.Row([min_layover_tf, max_layover_tf]),
-                ft.Text("舱位等级:"), flight_class_rg, direct_only_cb,
-                no_fly_cb, ft.Row([no_fly_start_tf, no_fly_end_tf]),
-                ft.Divider(height=20),               
-                ft.Text("旅行范围", size=16, weight=ft.FontWeight.BOLD),
-                select_all_cities_cb,
-                ft.Container(content=cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=250),
-                ft.Divider(height=20),
-                ft.Text("包含国家（可选)", size=16, weight=ft.FontWeight.BOLD),
-                ft.Container(content=forced_cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=150),
-                ft.Divider(height=20),
-                find_button,
-                ft.Text(" ", size=5),
-            ],
-            scroll=ft.ScrollMode.ADAPTIVE
-        ),
-        bgcolor=ft.Colors.WHITE,
-        padding=20,
-        border_radius=8,
-        expand=True
-    )
+    # This new parent Column will hold both the scrollable inputs and the fixed buttons
+    ft.Column(
+        [
+            # Part 1: The scrollable section with all the inputs
+            ft.Column(
+                [
+                    ft.Text("", size=3, weight=ft.FontWeight.BOLD),
+                    start_city_dd, end_city_dd, num_countries_tf,
+                    ft.Divider(height=20),
+                    ft.Row([start_date_tf, start_date_button , end_date_tf, end_date_button]),
+                    ft.Divider(height=20),
+                    ft.Text("航班筛选", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Row([min_layover_tf, max_layover_tf]),
+                    max_flight_duration_tf,
+                    ft.Text("舱位等级:"), flight_class_rg,
+                    ft.Row([direct_only_cb, max_transfers_tf]),
+                    no_fly_cb, ft.Row([no_fly_start_tf, no_fly_end_tf]),
+                    ft.Divider(height=20),
+                     ft.Text("旅行范围", size=16, weight=ft.FontWeight.BOLD),
+                    select_all_cities_cb,
+                    ft.Container(content=cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=250),
+                    ft.Divider(height=20),
+                    ft.Text("必须国家（可选)", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Container(content=forced_cities_checklist, border=ft.border.all(1, ft.Colors.GREY_400), border_radius=5, padding=5, height=150),
+                ],
+                scroll=ft.ScrollMode.ADAPTIVE,
+                expand=True # This makes the column fill available space, pushing the buttons down
+            ),
+            # Part 2: The fixed button section at the bottom
+            ft.Divider(height=1),
+            ft.Container(
+                content=ft.Row([find_button, stop_button], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+                padding=ft.padding.only(top=2, bottom=2) # Add some spacing around the buttons
+            )
+        ]
+    ),
+    bgcolor=ft.Colors.WHITE,
+    padding=20,
+    border_radius=8,
+    expand=True
+)
     
     results_panel = ft.Container(
         ft.Column([
@@ -382,8 +464,8 @@ def main(page: ft.Page):
             # Enable all the interactive controls
             for ctrl in [
                 start_city_dd, end_city_dd, num_countries_tf,
-                min_layover_tf, max_layover_tf, flight_class_rg,
-                direct_only_cb, no_fly_cb, find_button,
+                min_layover_tf, max_layover_tf, max_flight_duration_tf, flight_class_rg,
+                direct_only_cb, max_transfers_tf, no_fly_cb, find_button,
                 start_date_tf, end_date_tf, start_date_button, end_date_button,
                 select_all_forced_cities_cb, select_all_cities_cb
             ]:
